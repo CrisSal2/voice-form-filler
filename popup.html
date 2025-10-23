@@ -1,0 +1,49 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Voice Form Filler</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <header>
+    <h1>Voice Form Filler</h1>
+  </header>
+
+  <section>
+    <div class="row">
+      <button id="start">🎙 Start</button>
+      <button id="stop" disabled>⏹ Stop</button>
+    </div>
+
+    <label for="transcript">Transcript (editable):</label>
+    <textarea id="transcript" placeholder="e.g. Submitted To: John Doe; Email: john@acme.com; Completion Date: Dec 5, 2025"></textarea>
+
+    <div class="row">
+      <button id="parse">Parse → Map</button>
+      <button id="ai-parse">AI Parse</button>
+      <button id="pro">Make Professional</button>
+    </div>
+
+    <label for="kv">Parsed Field Map (editable JSON):</label>
+    <textarea id="kv" spellcheck="false" placeholder='{"Submitted To":"John Doe","Email":"john@acme.com"}'></textarea>
+
+    <div class="row">
+      <button id="fill">Fill Now</button>
+      <a href="options.html" target="_blank">Options</a>
+    </div>
+
+    <details>
+      <summary>Voice grammar tips</summary>
+      <ul>
+        <li>Use “Field: Value” pairs separated by commas or semicolons.</li>
+        <li>Say exact option text for dropdowns/radios when possible; fuzzy matching is supported.</li>
+      </ul>
+    </details>
+
+    <div id="status"></div>
+  </section>
+
+  <script src="popup.js"></script>
+</body>
+</html>
