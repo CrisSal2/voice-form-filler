@@ -1,5 +1,82 @@
 /* global chrome */
+let SR = {
+  rec: null,
+  listening: false,
+  interim: '',
+  final: ''
+};
 
+function ensureSpeech() {
+  const SRClass = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!SRClass) throw new Error('SpeechRecognition not supported in this browser.');
+  const rec = new SRClass();
+  rec.continuous = true;
+  rec.lang = 'en-US';
+  rec.interimResults = true;
+  return rec;
+}
+
+async function requestMicOnce() {
+  // Prompt for mic explicitly to avoid popup/permission flakiness
+  try {
+    const s = await navigator.mediaDevices.getUserMedia({ audio: true });
+    s.getTracks().forEach(t => t.stop());
+    return true;
+  } catch (e) {
+    throw new Error('Microphone permission denied or unavailable.');
+  }
+}
+
+async function startListening() {
+  if (SR.listening) return;
+  await requestMicOnce();
+
+  SR.rec = ensureSpeech();
+  SR.interim = '';
+  SR.final = '';
+
+  SR.rec.onresult = (e) => {
+    let txt = '';
+    for (let i = e.resultIndex; i < e.results.length; i++) {
+      const res = e.results[i];
+      txt += res[0].transcript;
+      if (res.isFinal) {
+        SR.final += res[0].transcript + ' ';
+        SR.interim = '';
+      } else {
+        SR.interim = txt;
+      }
+    }
+    chrome.runtime.sendMessage({
+      type: 'SR_UPDATE',
+      payload: {
+        interim: SR.interim.trim(),
+        final: SR.final.trim()
+      }
+    });
+  };
+
+  SR.rec.onerror = (e) => {
+    chrome.runtime.sendMessage({ type: 'SR_ERROR', payload: { message: e.error || String(e) } });
+    stopListening();
+  };
+
+  SR.rec.onend = () => {
+    SR.listening = false;
+    chrome.runtime.sendMessage({ type: 'SR_STATE', payload: { listening: false } });
+  };
+
+  SR.rec.start();
+  SR.listening = true;
+  chrome.runtime.sendMessage({ type: 'SR_STATE', payload: { listening: true } });
+}
+
+function stopListening() {
+  try { SR.rec && SR.rec.stop && SR.rec.stop(); } catch {}
+  SR.listening = false;
+}
+
+// -------- Existing fill code (unchanged) --------
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
 chrome.runtime.onMessage.addListener(async (msg, _sender, sendResponse) => {
@@ -11,10 +88,21 @@ chrome.runtime.onMessage.addListener(async (msg, _sender, sendResponse) => {
       console.error(e);
       sendResponse({ ok: false, error: e.message });
     }
-    return true; // async
+    return true;
+  }
+  if (msg?.type === 'SR_START') {
+    startListening().catch(err => chrome.runtime.sendMessage({ type: 'SR_ERROR', payload: { message: err.message } }));
+    sendResponse({ ok: true });
+    return true;
+  }
+  if (msg?.type === 'SR_STOP') {
+    stopListening();
+    sendResponse({ ok: true });
+    return true;
   }
 });
 
+// ---- Autofill functions from previous content.js ----
 async function fillFields(map) {
   const fields = indexFields();
   for (const [key, rawVal] of Object.entries(map)) {
@@ -26,7 +114,6 @@ async function fillFields(map) {
 }
 
 function indexFields() {
-  // Gather inputs/selects/textarea and capture label text and context
   const nodes = Array.from(document.querySelectorAll('input, select, textarea'));
   const labels = new Map();
   document.querySelectorAll('label[for]').forEach(l => labels.set(l.getAttribute('for'), textFromNode(l)));
@@ -53,7 +140,6 @@ function indexFields() {
 
 function guessPrettyName(s) {
   if (!s) return '';
-  // convert snake/camel to words
   return s
     .replace(/[_\-]+/g, ' ')
     .replace(/([a-z])([A-Z])/g, '$1 $2')
@@ -67,18 +153,13 @@ function textFromNode(n) {
 function closestLabelText(el) {
   const wrapLabel = el.closest('label');
   if (wrapLabel) return textFromNode(wrapLabel);
-
-  // Try using aria-labelledby
   const ariaId = el.getAttribute('aria-labelledby');
   if (ariaId) {
     const s = ariaId.split(/\s+/).map(id => document.getElementById(id)).filter(Boolean).map(textFromNode).join(' ');
     if (s) return s;
   }
-
-  // Scan DOM nearby
   const parent = el.closest('div, section, td, th, li, p') || el.parentElement;
   if (!parent) return '';
-  // Prefer preceding text nodes
   const prev = parent.querySelector('label') || parent.querySelector('span, strong, b, p, h1, h2, h3, h4');
   return prev ? textFromNode(prev) : '';
 }
@@ -100,12 +181,10 @@ function bestFieldMatch(fields, spokenKey) {
   const target = norm(spokenKey);
   let best = null;
   let bestScore = 0;
-
   for (const f of fields) {
     const s = similarity(f.scoreKeys, target) * 0.7 + similarity(f.label, target) * 0.3;
     if (s > bestScore) { bestScore = s; best = f; }
   }
-  // Threshold; if too low, skip to avoid wrong fills
   return bestScore >= 0.25 ? best : null;
 }
 
@@ -114,7 +193,6 @@ async function applyValue(f, value) {
   const tag = el.tagName.toLowerCase();
   const type = (el.type || '').toLowerCase();
 
-  // Text-like
   if (tag === 'textarea' || (tag === 'input' && ['text','email','tel','url','number','search','date','datetime-local'].includes(type))) {
     el.focus();
     el.value = value;
@@ -123,27 +201,23 @@ async function applyValue(f, value) {
     return;
   }
 
-  // Checkbox or radio: try to match label text or value
   if (tag === 'input' && (type === 'checkbox' || type === 'radio')) {
-    // We might be passed multiple values: split by comma
     const wants = value.split(/[,;]+/).map(v => norm(v));
     const group = findGroup(el);
     const candidates = group.length ? group : [el];
-
     for (const c of candidates) {
       const lab = closestLabelText(c) || c.value || c.name || '';
       const nlab = norm(lab);
       const nval = norm(c.value);
       const shouldCheck = wants.some(w => w && (nlab.includes(w) || nval.includes(w)));
       if (shouldCheck) {
-        c.click(); // triggers change for most frameworks
+        c.click();
         await sleep(20);
       }
     }
     return;
   }
 
-  // Selects: fuzzy match option text/value
   if (tag === 'select') {
     const sel = el;
     const want = norm(value);
@@ -160,7 +234,6 @@ async function applyValue(f, value) {
     return;
   }
 
-  // Contenteditable (some apps use this)
   if (el.isContentEditable) {
     el.focus();
     document.execCommand('selectAll', false, null);
